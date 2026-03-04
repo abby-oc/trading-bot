@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""
+server.py — FastAPI data server for the trading bot frontend.
+
+Endpoints:
+  GET /api/klines?symbol=BTC-PERP&interval=1d&limit=500
+  GET /api/latest
+  GET /api/symbols
+  GET /             → serves frontend/index.html
+"""
+
+import sys
+from pathlib import Path
+from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+
+from market_db import MarketDB
+
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+DB_PATH      = Path(__file__).parent.parent / "data" / "market.duckdb"
+
+app = FastAPI(title="Trading Bot API")
+
+# Serve static frontend files
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+def get_db():
+    return MarketDB(path=DB_PATH, read_only=True)
+
+
+@app.get("/")
+def index():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+@app.get("/api/symbols")
+def symbols():
+    db = get_db()
+    try:
+        rows = db.con.execute(
+            "SELECT DISTINCT symbol FROM klines ORDER BY symbol"
+        ).fetchall()
+        syms = [r[0] for r in rows] + ["BTCSOL"]
+        return {"symbols": syms}
+    finally:
+        db.close()
+
+
+@app.get("/api/klines")
+def klines(
+    symbol: str   = Query("BTC-PERP"),
+    interval: str = Query("1d"),
+    limit: int    = Query(500, ge=1, le=1000),
+):
+    db = get_db()
+    try:
+        df = db.ohlcv(symbol, interval, limit=limit)
+        if df.empty:
+            raise HTTPException(404, f"No data for {symbol}/{interval}")
+
+        # Lightweight Charts wants { time, open, high, low, close, value }
+        # time must be Unix seconds (not ms)
+        records = []
+        for _, row in df.iterrows():
+            records.append({
+                "time":   int(row["open_time"]) // 1000,
+                "open":   round(float(row["open"]),  6),
+                "high":   round(float(row["high"]),  6),
+                "low":    round(float(row["low"]),   6),
+                "close":  round(float(row["close"]), 6),
+                "volume": round(float(row.get("volume", row.get("btc_volume", 0)) or 0), 6),
+            })
+        return JSONResponse({"symbol": symbol, "interval": interval, "candles": records})
+    finally:
+        db.close()
+
+
+@app.get("/api/latest")
+def latest():
+    db = get_db()
+    try:
+        df = db.con.execute("SELECT * FROM latest_prices ORDER BY symbol, interval").df()
+        result = []
+        for _, row in df.iterrows():
+            result.append({
+                "symbol":   row["symbol"],
+                "interval": row["interval"],
+                "close":    round(float(row["close"]), 6),
+                "dt":       str(row["dt"]),
+            })
+        # Add BTCSOL from daily
+        btcsol = db.con.execute("""
+            SELECT close FROM btcsol_klines WHERE interval='1d'
+            ORDER BY open_time DESC LIMIT 1
+        """).fetchone()
+        if btcsol:
+            result.append({"symbol": "BTCSOL", "interval": "1d", "close": round(btcsol[0], 4), "dt": ""})
+        return {"prices": result}
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="127.0.0.1", port=7433, reload=False, log_level="warning")
