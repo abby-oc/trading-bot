@@ -8,5 +8,9 @@ __pycache__/
 *.pyo
 .env
 
+# Runtime
+logs/
+config/
+
 # OS
 .DS_Store

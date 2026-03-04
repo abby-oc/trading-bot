@@ -89,6 +89,19 @@
             border-radius:4px; cursor:pointer; font-size:11px; margin-bottom:6px; }
   #bt-btn:hover { background:var(--accent); color:#000; }
 
+  /* live indicator */
+  .live-dot { display:inline-block; width:6px; height:6px; border-radius:50%;
+              background:#f85149; animation:pulse 1.5s infinite; margin-right:3px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .live-dot.active { background:#3fb950; }
+
+  /* scalper panel */
+  .scalper-line { font-size:10px; font-family:monospace; color:var(--muted); line-height:1.5;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .scalper-line.trade { color:var(--accent); }
+  .scalper-line.win  { color:var(--green); }
+  .scalper-line.loss { color:var(--red); }
+
   /* status bar */
   #statusbar { padding:3px 14px; background:var(--surface); border-top:1px solid var(--border);
                color:var(--muted); font-size:10px; flex-shrink:0; display:flex; gap:18px; }
@@ -133,13 +146,18 @@
   </div>
 
   <div class="btn-group" id="interval-btns">
-    <button data-iv="1d"  class="active">1D</button>
+    <button data-iv="1d">1D</button>
     <button data-iv="4h">4H</button>
     <button data-iv="1h">1H</button>
     <button data-iv="30m">30M</button>
     <button data-iv="15m">15M</button>
     <button data-iv="5m">5M</button>
-    <button data-iv="1m">1M</button>
+    <button data-iv="1m" class="active">1M</button>
+  </div>
+
+  <div class="btn-group" id="source-btns">
+    <button data-src="live" class="active" style="color:#3fb950"><span class="live-dot active"></span>LIVE</button>
+    <button data-src="local">LOCAL</button>
   </div>
 
   <!-- Indicator toggles -->
@@ -199,6 +217,14 @@
       <div id="risk-panel"></div>
     </div>
 
+    <!-- Scalper -->
+    <div>
+      <h3><span class="live-dot" id="scalper-dot"></span> Scalper</h3>
+      <div id="scalper-panel" style="max-height:120px;overflow-y:auto">
+        <span style="color:var(--muted);font-size:10px">Not running</span>
+      </div>
+    </div>
+
     <!-- Backtest -->
     <div>
       <h3>Backtest</h3>
@@ -233,7 +259,7 @@
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-const state = { symbol: 'BTC-PERP', interval: '1d' };
+const state = { symbol: 'SOL-PERP', interval: '1m', source: 'live' };
 let mainChart, candleSeries, volChart, volSeries, rsiChart, rsiSeries, rsiOBSeries, rsiOSSeries;
 let ema12Series, ema26Series, ema50Series, bbUpperSeries, bbMidSeries, bbLowerSeries;
 let signalMarkers = [];
@@ -351,10 +377,20 @@ function updateBarStats(bar) {
 async function render() {
   document.getElementById('loading').style.display = 'flex';
   try {
-    const [kData, iData] = await Promise.all([
-      fetch(`/api/klines?symbol=${state.symbol}&interval=${state.interval}&limit=500`).then(r=>r.json()),
-      fetch(`/api/indicators?symbol=${state.symbol}&interval=${state.interval}&limit=500`).then(r=>r.json()),
-    ]);
+    let kData, iData;
+
+    if (state.source === 'live') {
+      // Fetch from Orderly live API
+      const liveRes = await fetch(`/api/live/klines?symbol=${state.symbol}&interval=${state.interval}&limit=500`);
+      const liveData = await liveRes.json();
+      kData = { candles: liveData.candles || [] };
+      iData = { data: [] }; // No indicators for live data (yet)
+    } else {
+      [kData, iData] = await Promise.all([
+        fetch(`/api/klines?symbol=${state.symbol}&interval=${state.interval}&limit=500`).then(r=>r.json()),
+        fetch(`/api/indicators?symbol=${state.symbol}&interval=${state.interval}&limit=500`).then(r=>r.json()),
+      ]);
+    }
 
     const candles = kData.candles || [];
     const indData = iData.data || [];
@@ -669,12 +705,74 @@ function updateCoverageNote() {
     `${note} of data · Updated ${new Date().toLocaleTimeString()}`;
 }
 
+// ── Source switching ────────────────────────────────────────────────────
+document.querySelectorAll('#source-btns button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.source = btn.dataset.src;
+    document.querySelectorAll('#source-btns button').forEach(b => {
+      b.classList.toggle('active', b === btn);
+      if (b.dataset.src === 'live') {
+        b.style.color = b === btn ? '#3fb950' : '';
+      }
+    });
+    render();
+  });
+});
+
+// ── Scalper status polling ─────────────────────────────────────────────
+async function pollScalper() {
+  try {
+    const res = await fetch('/api/live/scalper');
+    const data = await res.json();
+    const panel = document.getElementById('scalper-panel');
+    const dot   = document.getElementById('scalper-dot');
+
+    if (data.running && data.lines.length) {
+      dot.classList.add('active');
+      panel.innerHTML = data.lines.slice(-8).map(line => {
+        let cls = 'scalper-line';
+        if (line.includes('OPENING') || line.includes('CLOSING')) cls += ' trade';
+        if (line.includes('🟢')) cls += ' win';
+        if (line.includes('🔴')) cls += ' loss';
+        const short = line.replace(/^\d{4}-\d{2}-\d{2} /, '');
+        return `<div class="${cls}" title="${line}">${short}</div>`;
+      }).join('');
+      panel.scrollTop = panel.scrollHeight;
+    } else {
+      dot.classList.remove('active');
+      panel.innerHTML = '<span style="color:var(--muted);font-size:10px">Not running</span>';
+    }
+  } catch(e) {}
+}
+
+// ── Live price update (header) ─────────────────────────────────────────
+async function pollLivePrice() {
+  if (state.source !== 'live') return;
+  try {
+    const res = await fetch(`/api/live/price?symbol=${state.symbol}`);
+    const data = await res.json();
+    if (data.price) {
+      document.getElementById('cur-price').textContent = fmt(data.price, dp());
+    }
+  } catch(e) {}
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────
+// Default to SOL + 1M + LIVE
+document.querySelectorAll('#symbol-btns button').forEach(b =>
+  b.classList.toggle('active', b.dataset.sym === 'SOL-PERP'));
+
 initCharts();
 loadMarketCards();
 render();
 loadRisk();
-setInterval(() => { render(); loadMarketCards(); }, 60_000);
+pollScalper();
+
+// Live mode: refresh chart every 10s, price every 3s
+setInterval(() => { render(); if (state.source !== 'live') loadMarketCards(); },
+  state.source === 'live' ? 10_000 : 60_000);
+setInterval(pollScalper, 5_000);
+setInterval(pollLivePrice, 3_000);
 </script>
 </body>
 </html>

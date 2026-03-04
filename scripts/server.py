@@ -221,5 +221,128 @@ def indicators_endpoint(
         db.close()
 
 
+# ── Orderly Live Data ─────────────────────────────────────────────────────
+
+import httpx
+import math as _math
+
+ORDERLY_BASE = "https://api-evm.orderly.org"
+# Map interval strings to Orderly TV resolutions
+ORDERLY_RES_MAP = {
+    "1m": "1", "5m": "5", "15m": "15", "30m": "30",
+    "1h": "60", "4h": "240", "1d": "1D",
+}
+# Map our symbol names to Orderly symbols
+ORDERLY_SYM_MAP = {
+    "SOL-PERP": "PERP_SOL_USDC",
+    "BTC-PERP": "PERP_BTC_USDC",
+    "ETH-PERP": "PERP_ETH_USDC",
+}
+
+_http_client = None
+
+def _get_http():
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client(timeout=10)
+    return _http_client
+
+
+@app.get("/api/live/klines")
+def live_klines(
+    symbol: str   = Query("SOL-PERP"),
+    interval: str = Query("1m"),
+    limit: int    = Query(200, ge=1, le=1000),
+):
+    """Fetch live klines from Orderly Network."""
+    orderly_sym = ORDERLY_SYM_MAP.get(symbol)
+    if not orderly_sym:
+        raise HTTPException(400, f"Unknown symbol: {symbol}")
+
+    resolution = ORDERLY_RES_MAP.get(interval, "1")
+
+    import time as _time
+    now = int(_time.time())
+    # Estimate seconds per bar
+    secs = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+            "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 60)
+    from_ts = now - (limit * secs)
+
+    try:
+        r = _get_http().get(f"{ORDERLY_BASE}/v1/tv/history", params={
+            "symbol": orderly_sym,
+            "resolution": resolution,
+            "from": from_ts,
+            "to": now,
+        })
+        data = r.json()
+    except Exception as e:
+        raise HTTPException(502, f"Orderly API error: {e}")
+
+    if "t" not in data or not data["t"]:
+        raise HTTPException(404, f"No live data for {symbol}/{interval}")
+
+    candles = []
+    for i in range(len(data["t"])):
+        candles.append({
+            "time":   data["t"][i],
+            "open":   data["o"][i],
+            "high":   data["h"][i],
+            "low":    data["l"][i],
+            "close":  data["c"][i],
+            "volume": data["v"][i] if data["v"][i] else 0,
+        })
+
+    return JSONResponse({
+        "symbol": symbol,
+        "interval": interval,
+        "source": "orderly",
+        "candles": candles
+    })
+
+
+@app.get("/api/live/price")
+def live_price(symbol: str = Query("SOL-PERP")):
+    """Fetch latest price from Orderly."""
+    orderly_sym = ORDERLY_SYM_MAP.get(symbol)
+    if not orderly_sym:
+        raise HTTPException(400, f"Unknown symbol: {symbol}")
+
+    try:
+        r = _get_http().get(f"{ORDERLY_BASE}/v1/public/market_trades",
+                            params={"symbol": orderly_sym, "limit": 1})
+        data = r.json()
+    except Exception as e:
+        raise HTTPException(502, f"Orderly API error: {e}")
+
+    if data.get("success") and data["data"]["rows"]:
+        t = data["data"]["rows"][0]
+        return JSONResponse({
+            "symbol": symbol,
+            "price": t["executed_price"],
+            "side": t["side"],
+            "qty": t["executed_quantity"],
+            "timestamp": t["executed_timestamp"],
+            "source": "orderly",
+        })
+    raise HTTPException(404, "No price data")
+
+
+@app.get("/api/live/scalper")
+def scalper_status():
+    """Read scalper log for current status (last 20 lines)."""
+    log_dir = Path(__file__).parent.parent / "logs"
+    logs = sorted(log_dir.glob("scalper_*.log"), reverse=True)
+    if not logs:
+        return JSONResponse({"running": False, "lines": []})
+
+    lines = logs[0].read_text().splitlines()[-20:]
+    return JSONResponse({
+        "running": True,
+        "log_file": logs[0].name,
+        "lines": lines,
+    })
+
+
 if __name__ == "__main__":
     uvicorn.run("server:app", host="127.0.0.1", port=7433, reload=False, log_level="warning")
