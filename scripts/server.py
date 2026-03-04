@@ -332,7 +332,7 @@ def live_price(symbol: str = Query("SOL-PERP")):
 def scalper_status():
     """Read scalper log for current status (last 20 lines)."""
     log_dir = Path(__file__).parent.parent / "logs"
-    logs = sorted(log_dir.glob("scalper_*.log"), reverse=True)
+    logs = sorted(log_dir.glob("scalper_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not logs:
         return JSONResponse({"running": False, "lines": []})
 

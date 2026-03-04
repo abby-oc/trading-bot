@@ -22,7 +22,7 @@ class LiveTradeStore:
     
     def __init__(self):
         self.con = duckdb.connect(str(db_path))
-        self.base_url = "https://server-prod.hz.vestmarkets.com/v2"  # Orderly
+        self.base_url = "https://api-evm.orderly.org"  # Orderly public API
         self.symbol = "PERP_SOL_USDC"
         
         self.con.execute("""
@@ -64,7 +64,7 @@ class LiveTradeStore:
             
         trades_df = [
             {
-                'trade_id': str(t['trade_id']),
+                'trade_id': f"{t['executed_timestamp']}_{t['executed_price']}_{t.get('executed_quantity','')}",
                 'symbol': self.symbol,
                 'executed_price': float(t['executed_price']),
                 'executed_quantity': float(t['executed_quantity']),
@@ -75,10 +75,11 @@ class LiveTradeStore:
         ]
         
         # Upsert without duplication via trade_id PK
-        self.con.execute("""
+        self.con.executemany("""
             INSERT OR REPLACE INTO live_trade_cache 
-            SELECT * FROM trades_df
-        """, [trades_df])
+            (trade_id, symbol, executed_price, executed_quantity, side, executed_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, [(r['trade_id'], r['symbol'], r['executed_price'], r['executed_quantity'], r['side'], r['executed_timestamp']) for r in trades_df])
     
     def get_recent_prices(self, lookback_hours=2, limit=100):
         """Get cached live trades for restart window"""

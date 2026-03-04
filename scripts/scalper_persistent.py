@@ -293,7 +293,7 @@ class PersistentScalperEngine:
                     self.check_exit_conditions(latest_price)
                     
                     # Check for new entry
-                    elif self.can_trade() and jump:
+                    if self.can_trade() and jump:
                         direction, jump_pct, price = jump
                         logging.info(f"⚡ Jump detected: {jump_pct:+.2f}% → {direction}")
                         self.open_position(direction, jump_pct, price)
@@ -319,11 +319,17 @@ class PersistentScalperEngine:
 # =============================================================================
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [SCALPER] %(message)s",
-        handlers=[logging.FileHandler(WORKSPACE / "logs" / "scalper_persistent.log"), logging.StreamHandler()]
-    )
+    log_path = Path(__file__).parent.parent / "logs" / "scalper_persistent.log"
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+    fmt = logging.Formatter("%(asctime)s [SCALPER] %(message)s")
+    fh = logging.FileHandler(log_path)
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(fh)
+    root.addHandler(sh)
     
     logging.info("🚀 Initializing persistent scalper...")
     
