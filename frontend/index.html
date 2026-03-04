@@ -98,6 +98,23 @@
   #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
              background:var(--bg); color:var(--muted); font-size:13px; z-index:20; }
 
+  /* regime badge */
+  .regime-badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:11px;
+                  font-weight:700; letter-spacing:.5px; margin-bottom:6px; }
+  .regime-bar   { height:4px; border-radius:2px; margin-bottom:8px; background:var(--border); }
+  .regime-fill  { height:100%; border-radius:2px; transition:width .3s; }
+
+  /* risk metrics */
+  .risk-row  { display:flex; justify-content:space-between; padding:1px 0; }
+  .risk-lbl  { font-size:10px; color:var(--muted); }
+  .risk-val  { font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .risk-warn { font-size:9px; color:#f0c040; margin-top:4px; line-height:1.4; word-break:break-word; }
+  .risk-warn.danger { color:#f85149; }
+
+  /* data coverage note */
+  .coverage-note { font-size:9px; color:var(--muted); margin-top:3px;
+                   padding:3px 5px; background:var(--bg); border-radius:3px; }
+
   /* indicator toggle buttons */
   .ind-btn { font-size:10px; padding:2px 7px; background:var(--bg); border:1px solid var(--border);
              color:var(--muted); border-radius:3px; cursor:pointer; }
@@ -116,9 +133,13 @@
   </div>
 
   <div class="btn-group" id="interval-btns">
-    <button data-iv="1d" class="active">1D</button>
+    <button data-iv="1d"  class="active">1D</button>
     <button data-iv="4h">4H</button>
     <button data-iv="1h">1H</button>
+    <button data-iv="30m">30M</button>
+    <button data-iv="15m">15M</button>
+    <button data-iv="5m">5M</button>
+    <button data-iv="1m">1M</button>
   </div>
 
   <!-- Indicator toggles -->
@@ -161,6 +182,21 @@
     <div>
       <h3>Signals</h3>
       <div id="signals-panel"><span style="color:var(--muted);font-size:11px">Loading…</span></div>
+    </div>
+
+    <!-- Risk -->
+    <div>
+      <h3>Risk</h3>
+      <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center">
+        <span style="color:var(--muted);font-size:10px">Lev:</span>
+        <input id="lev-input" type="number" value="1" min="1" max="20" step="0.5"
+          style="width:50px;background:var(--bg);border:1px solid var(--border);color:var(--text);
+                 border-radius:3px;padding:2px 5px;font-size:11px">
+        <span style="color:var(--muted);font-size:10px">×</span>
+        <button id="risk-btn" style="flex:1;padding:4px;background:var(--border);border:none;
+          color:var(--text);border-radius:4px;cursor:pointer;font-size:11px">Assess ▶</button>
+      </div>
+      <div id="risk-panel"></div>
     </div>
 
     <!-- Backtest -->
@@ -578,10 +614,66 @@ document.querySelectorAll('#interval-btns button').forEach(btn => {
   });
 });
 
+// ── Coverage note ─────────────────────────────────────────────────────────
+const COVERAGE = {
+  '1d':'~500 days','4h':'~83 days','1h':'~21 days',
+  '30m':'~10 days','15m':'~5 days','5m':'~1.7 days','1m':'~8 hours'
+};
+
+// ── Risk panel ────────────────────────────────────────────────────────────
+async function loadRisk() {
+  const panel = document.getElementById('risk-panel');
+  const lev   = parseFloat(document.getElementById('lev-input').value) || 1;
+  try {
+    const res  = await fetch(`/api/risk?symbol=${state.symbol}&interval=${state.interval}&leverage=${lev}&capital=10000`);
+    const d    = await res.json();
+
+    const pctile = d.atr_percentile;
+    const fillW  = Math.round(pctile) + '%';
+    const isD    = d.liq_dangerous;
+
+    panel.innerHTML = `
+      <span class="regime-badge" style="background:${d.regime_color}22;color:${d.regime_color};border:1px solid ${d.regime_color}44">
+        ${d.regime}
+      </span>
+      <div class="regime-bar"><div class="regime-fill" style="width:${fillW};background:${d.regime_color}"></div></div>
+      <div class="risk-row"><span class="risk-lbl">ATR</span>        <span class="risk-val">${fmt(d.atr, 2)} (${d.atr_pct}%)</span></div>
+      <div class="risk-row"><span class="risk-lbl">ATR pctile</span> <span class="risk-val">${d.atr_percentile}th</span></div>
+      <div class="risk-row"><span class="risk-lbl">HVol 20</span>    <span class="risk-val">${d.hvol_20}%/yr</span></div>
+      <div class="risk-row"><span class="risk-lbl">Spike score</span><span class="risk-val" style="color:${d.spike_score>0.5?'#f85149':d.spike_score>0.25?'#f0c040':'inherit'}">${(d.spike_score*100).toFixed(0)}%</span></div>
+      <div class="risk-row"><span class="risk-lbl">Max lev (regime)</span><span class="risk-val">${d.max_leverage}×</span></div>
+      <hr style="border-color:var(--border);margin:5px 0">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">AT ${lev}× LEVERAGE — $10k capital</div>
+      <div class="risk-row"><span class="risk-lbl">Position size</span><span class="risk-val">${d.position_units} units</span></div>
+      <div class="risk-row"><span class="risk-lbl">Notional</span>    <span class="risk-val">$${fmt(d.position_notional,0)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">Stop dist (2×ATR)</span><span class="risk-val">${fmt(d.stop_distance,2)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">Stop long</span>   <span class="risk-val" style="color:var(--red)">${fmt(d.stop_price_long,2)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">Stop short</span>  <span class="risk-val" style="color:var(--green)">${fmt(d.stop_price_short,2)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">$ at risk</span>   <span class="risk-val">$${fmt(d.risk_amount,2)}</span></div>
+      <hr style="border-color:var(--border);margin:5px 0">
+      <div class="risk-row"><span class="risk-lbl">Liq long</span>   <span class="risk-val" style="color:var(--red)">${fmt(d.liq_price_long,2)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">Liq short</span>  <span class="risk-val" style="color:var(--green)">${fmt(d.liq_price_short,2)}</span></div>
+      <div class="risk-row"><span class="risk-lbl">Liq distance</span><span class="risk-val">${d.liq_distance_pct}%</span></div>
+      <div class="risk-row"><span class="risk-lbl">ATRs to liq</span><span class="risk-val" style="color:${d.atr_to_liq<2?'#f85149':d.atr_to_liq<4?'#f0c040':'#3fb950'}">${d.atr_to_liq}×</span></div>
+      <div class="risk-warn ${isD?'danger':''}">${d.liq_warning}</div>
+    `;
+  } catch(e) { panel.innerHTML = '<span style="color:var(--muted);font-size:10px">Error loading risk</span>'; }
+}
+
+document.getElementById('risk-btn').addEventListener('click', loadRisk);
+
+// ── Status bar coverage note ──────────────────────────────────────────────
+function updateCoverageNote() {
+  const note = COVERAGE[state.interval] || '';
+  document.getElementById('sb-updated').textContent =
+    `${note} of data · Updated ${new Date().toLocaleTimeString()}`;
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 initCharts();
 loadMarketCards();
 render();
+loadRisk();
 setInterval(() => { render(); loadMarketCards(); }, 60_000);
 </script>
 </body>

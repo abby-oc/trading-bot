@@ -21,8 +21,9 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from market_db import MarketDB
-from strategy  import STRATEGIES, RatioZScore
+from strategy  import STRATEGIES, RatioZScore, make_strategies
 from backtest  import run_backtest
+from risk      import RiskManager
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 DB_PATH      = Path(__file__).parent.parent / "data" / "market.duckdb"
@@ -109,13 +110,36 @@ def latest():
         db.close()
 
 
+@app.get("/api/risk")
+def risk_endpoint(
+    symbol:   str   = Query("BTC-PERP"),
+    interval: str   = Query("1d"),
+    leverage: float = Query(1.0),
+    capital:  float = Query(10_000),
+):
+    db = get_db()
+    try:
+        df = db.ohlcv(symbol, interval, limit=200)
+        if df.empty:
+            raise HTTPException(404, f"No data for {symbol}/{interval}")
+        rm = RiskManager(capital=capital, risk_pct=0.01, max_leverage=leverage)
+        result = rm.assess(df, leverage=leverage)
+        result["symbol"]   = symbol
+        result["interval"] = interval
+        result["price"]    = float(df["close"].iloc[-1])
+        return JSONResponse(result)
+    finally:
+        db.close()
+
+
 @app.get("/api/signals")
 def signals_endpoint(symbol: str = Query(None), interval: str = Query("1d")):
     """Current signal from every strategy for the requested symbol (or all)."""
     db = get_db()
     try:
         out = []
-        for name, strat in STRATEGIES.items():
+        strats = make_strategies(interval)
+        for name, strat in strats.items():
             is_ratio = isinstance(strat, RatioZScore)
             syms = ["BTCSOL"] if is_ratio else (
                 [symbol] if symbol and not is_ratio else ["BTC-PERP", "SOL-PERP"]
@@ -147,7 +171,8 @@ def backtest_endpoint(
 ):
     db = get_db()
     try:
-        strat = STRATEGIES.get(strategy)
+        strats = make_strategies(interval)
+        strat = strats.get(strategy) or STRATEGIES.get(strategy)
         if not strat:
             raise HTTPException(400, f"Unknown strategy: {strategy}")
         is_ratio = isinstance(strat, RatioZScore)

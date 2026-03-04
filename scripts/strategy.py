@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from indicators import add_all, ema, rsi, zscore, macd, bollinger
+from indicators import add_all, ema, rsi, zscore, macd, bollinger, atr, sma
 
 
 # ── Signal dataclass ──────────────────────────────────────────────────────
@@ -301,10 +301,135 @@ class RatioZScore(Strategy):
                 f"MA({self.window})={r['ratio_ma']:.2f}")
 
 
-# ── Strategy registry ─────────────────────────────────────────────────────
+# ── Strategy 4: Momentum Breakout (short-term futures) ───────────────────
+
+class MomentumBreakout(Strategy):
+    """
+    Donchian Channel breakout — built for short-term futures (5m–4h).
+
+    LONG  when close breaks above the N-bar high (new high = momentum)
+    SHORT when close breaks below the N-bar low  (new low  = momentum)
+
+    Filters:
+      - ATR must be above its 20-bar SMA (trending, not choppy/mean-reverting)
+      - Breakout bar's range (high-low) must be > 0.5×ATR (real move, not noise)
+      - RSI not in extreme exhaustion zone (avoids chasing blowoff)
+
+    Exit:
+      - Opposite channel break
+      - OR RSI hits extreme (>80 for long, <20 for short)
+    """
+    name = "momentum_breakout"
+
+    def __init__(self, channel: int = 20, atr_period: int = 14,
+                 rsi_period: int = 14, rsi_ob: float = 80, rsi_os: float = 20):
+        self.channel    = channel
+        self.atr_period = atr_period
+        self.rsi_period = rsi_period
+        self.rsi_ob     = rsi_ob
+        self.rsi_os     = rsi_os
+
+    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+        c, h, l = df["close"], df["high"], df["low"]
+        df["atr_14"]   = atr(h, l, c, self.atr_period)
+        df["atr_sma"]  = sma(df["atr_14"], 20)
+        df["rsi_14"]   = rsi(c, self.rsi_period)
+        df["don_high"] = h.shift(1).rolling(self.channel).max()
+        df["don_low"]  = l.shift(1).rolling(self.channel).min()
+        df["bar_range"]= h - l
+        return df
+
+    def signals(self, df: pd.DataFrame) -> pd.Series:
+        close     = df["close"]
+        don_hi    = df["don_high"]
+        don_lo    = df["don_low"]
+        atr_s     = df["atr_14"]
+        atr_sma   = df["atr_sma"]
+        rsi_s     = df["rsi_14"]
+        bar_range = df["bar_range"]
+
+        # Regime filter: ATR expanding (trending market)
+        trending = atr_s > atr_sma * 0.9
+
+        # Breakout conditions
+        break_up   = (close > don_hi) & trending & (bar_range > atr_s * 0.5) & (rsi_s < self.rsi_ob)
+        break_down = (close < don_lo) & trending & (bar_range > atr_s * 0.5) & (rsi_s > self.rsi_os)
+
+        position = pd.Series(0, index=df.index, dtype=int)
+        pos = 0
+
+        for i in range(1, len(df)):
+            if pos == 0:
+                if break_up.iloc[i]:    pos =  1
+                elif break_down.iloc[i]: pos = -1
+            elif pos == 1:
+                # Exit: break below channel OR RSI exhaustion
+                if close.iloc[i] < don_lo.iloc[i] or rsi_s.iloc[i] > self.rsi_ob:
+                    pos = 0
+                    if break_down.iloc[i]: pos = -1
+            elif pos == -1:
+                if close.iloc[i] > don_hi.iloc[i] or rsi_s.iloc[i] < self.rsi_os:
+                    pos = 0
+                    if break_up.iloc[i]: pos = 1
+
+            position.iloc[i] = pos
+
+        return position
+
+    def _strength(self, df: pd.DataFrame) -> pd.Series:
+        """Strength = breakout magnitude relative to ATR."""
+        close  = df["close"]
+        don_hi = df["don_high"]
+        don_lo = df["don_low"]
+        atr_s  = df["atr_14"]
+        sig    = df["signal"]
+
+        ext = pd.Series(0.0, index=df.index)
+        long_mask  = sig ==  1
+        short_mask = sig == -1
+        ext[long_mask]  = ((close[long_mask] - don_hi[long_mask]) / atr_s[long_mask]).clip(0, 2) / 2
+        ext[short_mask] = ((don_lo[short_mask] - close[short_mask]) / atr_s[short_mask]).clip(0, 2) / 2
+        return ext.fillna(0)
+
+    def _reason(self, df: pd.DataFrame, idx: int) -> str:
+        r = df.iloc[idx]
+        return (f"Donchian({self.channel}) H={r['don_high']:.2f} L={r['don_low']:.2f} | "
+                f"ATR={r['atr_14']:.2f} (SMA={r['atr_sma']:.2f}) | "
+                f"RSI={r['rsi_14']:.1f}")
+
+
+# ── Timeframe-adaptive strategy factory ──────────────────────────────────
+
+# EMA/RSI params per timeframe — shorter TF = faster indicators
+TF_PARAMS = {
+    "1M":  dict(fast=12, slow=26, trend=50, rsi=14),
+    "1w":  dict(fast=12, slow=26, trend=50, rsi=14),
+    "3d":  dict(fast=12, slow=26, trend=50, rsi=14),
+    "1d":  dict(fast=12, slow=26, trend=50, rsi=14),
+    "4h":  dict(fast=9,  slow=21, trend=50, rsi=14),
+    "1h":  dict(fast=9,  slow=21, trend=34, rsi=14),
+    "30m": dict(fast=8,  slow=21, trend=34, rsi=9),
+    "15m": dict(fast=8,  slow=21, trend=34, rsi=9),
+    "5m":  dict(fast=5,  slow=13, trend=21, rsi=9),
+    "1m":  dict(fast=5,  slow=13, trend=21, rsi=7),
+}
+
+def make_strategies(interval: str = "1d") -> dict[str, Strategy]:
+    """Return strategy instances tuned for the given interval."""
+    p = TF_PARAMS.get(interval, TF_PARAMS["1d"])
+    return {
+        "ema_cross":        EMACross(fast=p["fast"], slow=p["slow"], trend_ema=p["trend"]),
+        "rsi_mean_rev":     RSIMeanRev(period=p["rsi"]),
+        "momentum_breakout":MomentumBreakout(channel=20, rsi_period=p["rsi"]),
+        "ratio_zscore":     RatioZScore(),
+    }
+
+
+# ── Strategy registry (default: 1d params) ────────────────────────────────
 
 STRATEGIES: dict[str, Strategy] = {
-    "ema_cross":     EMACross(),
-    "rsi_mean_rev":  RSIMeanRev(),
-    "ratio_zscore":  RatioZScore(),
+    "ema_cross":         EMACross(),
+    "rsi_mean_rev":      RSIMeanRev(),
+    "momentum_breakout": MomentumBreakout(),
+    "ratio_zscore":      RatioZScore(),
 }

@@ -29,7 +29,7 @@ ACCT_GRP  = 0
 PAGE_SIZE = 500   # API hard cap (returns 500 even if you request more)
 
 SYMBOLS    = ["BTC-PERP", "SOL-PERP"]
-INTERVALS  = ["1d", "4h", "1h"]   # daily, 4-hour, hourly
+INTERVALS  = ["1d", "4h", "1h", "30m", "15m", "5m", "1m"]
 
 # Approximate ms per candle — used to detect when we've hit the beginning of history
 INTERVAL_MS = {
@@ -38,6 +38,13 @@ INTERVAL_MS = {
     "6h": 21_600_000, "8h": 28_800_000, "12h": 43_200_000,
     "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
     "1M": 2_592_000_000,
+}
+
+# Coverage of 500 candles at each interval (approximate)
+INTERVAL_COVERAGE = {
+    "1m": "~8 hours", "5m": "~1.7 days", "15m": "~5 days",
+    "30m": "~10 days", "1h": "~21 days", "4h": "~83 days",
+    "1d": "~500 days (full history)",
 }
 
 # Exchange launch ≈ Oct 20 2024 UTC
