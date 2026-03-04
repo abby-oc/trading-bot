@@ -30,20 +30,33 @@ from orderly_auth import OrderlyClient
 # =============================================================================
 
 SYMBOL = "PERP_SOL_USDC"
-SOLANA_KEY = "5XY4ErjzPekDin7MyBzLcN6Dvd7rn2BRPaGzwZvStpu27uwyp7JXvPYpZfaCJ1nEBMeFoWqginvvfDBERdsKmGUj"
+# Load private key from credentials file (never hardcode)
+import json as _creds_json
+_CREDS_FILE = Path(__file__).resolve().parent.parent / "config" / "orderly_credentials.json"
+_creds = _creds_json.loads(_CREDS_FILE.read_text()) if _CREDS_FILE.exists() else {}
+SOLANA_KEY = _creds.get("private_key", "")
 
-# Get dynamic config from persistent storage on startup
+# Get dynamic config — check overrides file first, then DuckDB persistent store
+import json as _json
+_OVERRIDE_FILE = Path(__file__).resolve().parent.parent / "config" / "scalper_overrides.json"
+_overrides = {}
+if _OVERRIDE_FILE.exists():
+    try:
+        _overrides = _json.loads(_OVERRIDE_FILE.read_text())
+    except:
+        pass
+
 store = get_persistent_store()
 config = {
-    'JUMP_THRESHOLD_PCT': float(store.get_risk_param('jump_threshold_pct', 0.5)),
-    'MAX_LEVERAGE': int(store.get_risk_param('max_leverage', 10)),
-    'RISK_PER_TRADE_PCT': float(store.get_risk_param('risk_per_trade_pct', 30)),
+    'JUMP_THRESHOLD_PCT': float(_overrides.get('jump_threshold_pct', store.get_risk_param('jump_threshold_pct', 0.3))),
+    'MAX_LEVERAGE': int(_overrides.get('max_leverage', store.get_risk_param('max_leverage', 10))),
+    'RISK_PER_TRADE_PCT': float(_overrides.get('risk_per_trade_pct', store.get_risk_param('risk_per_trade_pct', 20))),
     'TP_MULTIPLIER': 1.5,
     'SL_MULTIPLIER': 0.8,
     'LOOKBACK_SECONDS': 60,
-    'MAX_HOLD_SECONDS': 300,
-    'COOLDOWN_SECONDS': 30,
-    'MAX_TRADES_PER_HOUR': 5
+    'MAX_HOLD_SECONDS': int(_overrides.get('max_hold_seconds', 120)),
+    'COOLDOWN_SECONDS': int(_overrides.get('cooldown_seconds', 15)),
+    'MAX_TRADES_PER_HOUR': int(_overrides.get('max_trades_per_hour', 12)),
 }
 
 # =============================================================================
@@ -72,10 +85,10 @@ class PersistentScalperEngine:
         self.client = client
         self.live_store = LiveTradeStore()
         
-        # Refresh config from persistent storage
+        # Refresh config — override file takes priority over DuckDB
         global config
-        config['JUMP_THRESHOLD_PCT'] = float(store.get_risk_param('jump_threshold_pct', 0.5))
-        config['MAX_LEVERAGE'] = int(store.get_risk_param('max_leverage', 10))
+        config['JUMP_THRESHOLD_PCT'] = float(_overrides.get('jump_threshold_pct', store.get_risk_param('jump_threshold_pct', 0.3)))
+        config['MAX_LEVERAGE'] = int(_overrides.get('max_leverage', store.get_risk_param('max_leverage', 10)))
         
         self.position: Optional[Position] = None
         self.last_trade_time = 0
@@ -287,7 +300,24 @@ class PersistentScalperEngine:
                     
                     # Log status every 30 cycles
                     if tick_count % 30 == 0:
-                        logging.info(f"📈 SOL ${latest_price:.3f}")
+                        threshold = config['JUMP_THRESHOLD_PCT']
+                        # Use wider window for display context; trigger window for signal
+                        pct_60  = self.live_store.get_price_change_pct(lookback_seconds=60)
+                        pct_300 = self.live_store.get_price_change_pct(lookback_seconds=300)
+                        pct = pct_60 if pct_60 is not None else pct_300
+                        if pct is not None:
+                            window_label = "60s" if pct_60 is not None else "5m"
+                            arrow = "↑" if pct >= 0 else "↓"
+                            bar_filled = min(int(abs(pct) / threshold * 10), 10)
+                            bar_str = "█" * bar_filled + "░" * (10 - bar_filled)
+                            if self.position:
+                                pos_pnl = ((latest_price - self.position.entry_price) / self.position.entry_price * 100) * (1 if self.position.side == "BUY" else -1)
+                                pos_str = f" | {self.position.side} @${self.position.entry_price:.3f} P&L:{pos_pnl:+.2f}%"
+                            else:
+                                pos_str = " | flat"
+                            logging.info(f"📈 SOL ${latest_price:.3f} | Δ({window_label}){arrow}{abs(pct):.3f}% [{bar_str}] {abs(pct)/threshold*100:.0f}% of {threshold}% trigger{pos_str}")
+                        else:
+                            logging.info(f"📈 SOL ${latest_price:.3f} | Δ awaiting data")
                     
                     # Check exit on open positions
                     self.check_exit_conditions(latest_price)

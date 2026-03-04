@@ -93,6 +93,19 @@ class LiveTradeStore:
             LIMIT ?
         """, [cutoff, limit]).df()
     
+    def get_price_change_pct(self, lookback_seconds=60):
+        """Return current % price change over lookback window (regardless of threshold)."""
+        recent_df = self.get_recent_prices(lookback_hours=1, limit=100)
+        if recent_df.empty:
+            return None
+        cutoff = int(time.time() * 1000) - (lookback_seconds * 1000)
+        recent_df = recent_df[recent_df['executed_timestamp'] > cutoff]
+        if len(recent_df) < 2:
+            return None
+        earliest = recent_df.iloc[-1]
+        latest = recent_df.iloc[0]
+        return ((latest['executed_price'] - earliest['executed_price']) / earliest['executed_price']) * 100
+
     def detect_price_jump(self, lookback_seconds=60) -> tuple:
         """Calculate actual price change from cached trades"""
         recent_df = self.get_recent_prices(lookback_hours=1, limit=100)

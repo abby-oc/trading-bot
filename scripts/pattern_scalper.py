@@ -36,7 +36,11 @@ from pattern_engine import PatternEngine, CompositeSignal
 # ── Configuration ─────────────────────────────────────────────────────────
 
 SYMBOL               = "PERP_SOL_USDC"
-SOLANA_KEY           = "5XY4ErjzPekDin7MyBzLcN6Dvd7rn2BRPaGzwZvStpu27uwyp7JXvPYpZfaCJ1nEBMeFoWqginvvfDBERdsKmGUj"
+# Load private key from credentials file (never hardcode)
+import json as _creds_json
+_CREDS_FILE = Path(__file__).resolve().parent.parent / "config" / "orderly_credentials.json"
+_creds = _creds_json.loads(_CREDS_FILE.read_text()) if _CREDS_FILE.exists() else {}
+SOLANA_KEY = _creds.get("private_key", "")
 
 ENTRY_CONFIDENCE_THRESHOLD = 0.52
 MIN_CONSENSUS              = 0.5
@@ -57,7 +61,7 @@ POLL_INTERVAL_SEC    = 2
 
 # Journal API
 JOURNAL_URL  = "https://journal-cal.vercel.app"
-JOURNAL_PASS = "vest2026"
+JOURNAL_PASS = os.environ.get("JOURNAL_PASS", "vest2026")
 
 # Logging
 LOG_DIR = Path(__file__).parent.parent / "logs"
