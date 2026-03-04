@@ -106,7 +106,7 @@ class LiveTradeStore:
         latest = recent_df.iloc[0]
         return ((latest['executed_price'] - earliest['executed_price']) / earliest['executed_price']) * 100
 
-    def detect_price_jump(self, lookback_seconds=60) -> tuple:
+    def detect_price_jump(self, lookback_seconds=60, threshold_pct=0.5) -> tuple:
         """Calculate actual price change from cached trades"""
         recent_df = self.get_recent_prices(lookback_hours=1, limit=100)
         if recent_df.empty:
@@ -126,8 +126,8 @@ class LiveTradeStore:
         price_change = latest['executed_price'] - earliest['executed_price']
         pct_change = (price_change / earliest['executed_price']) * 100
         
-        # Ensure minimum jump
-        if abs(pct_change) >= 0.5:  # 0.5% threshold
+        # Ensure minimum jump — threshold passed in from engine config
+        if abs(pct_change) >= threshold_pct:
             direction = "BUY" if pct_change > 0 else "SELL"
             return (direction, abs(pct_change), latest['executed_price'])
         

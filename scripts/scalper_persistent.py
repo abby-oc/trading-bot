@@ -60,6 +60,77 @@ config = {
 }
 
 # =============================================================================
+# JOURNAL CLIENT
+# =============================================================================
+
+JOURNAL_URL = "http://localhost:3741"
+JOURNAL_PASS = "vest2026"
+
+class JournalClient:
+    def __init__(self):
+        self.session = requests.Session()
+        self._login()
+
+    def _login(self):
+        try:
+            self.session.get(f"{JOURNAL_URL}/login?pass={JOURNAL_PASS}", timeout=5)
+        except Exception as e:
+            logging.warning(f"Journal login failed: {e}")
+
+    def open_trade(self, symbol, direction, entry_price, stop_loss, target_price,
+                   qty, leverage, strategy="scalper") -> Optional[str]:
+        """POST new trade entry, return journal id."""
+        from datetime import datetime
+        now = datetime.now()
+        try:
+            resp = self.session.post(f"{JOURNAL_URL}/api/trades", json={
+                "symbol": symbol,
+                "direction": "LONG" if direction == "BUY" else "SHORT",
+                "timeframe": "1m",
+                "strategy": strategy,
+                "entry_date": now.strftime("%Y-%m-%d"),
+                "entry_time": now.strftime("%H:%M"),
+                "entry_price": entry_price,
+                "stop_loss": stop_loss,
+                "target_price": target_price,
+                "position_size": qty,
+                "leverage": leverage,
+                "thesis": "Auto-scalper momentum jump",
+                "status": "open",
+            }, timeout=5)
+            if not resp.ok:
+                logging.warning(f"Journal open HTTP {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            journal_id = data.get("id")
+            if journal_id:
+                logging.info(f"📓 Journal entry created: {journal_id}")
+            else:
+                logging.warning(f"Journal open failed: {data}")
+            return journal_id
+        except Exception as e:
+            logging.warning(f"Journal open error: {e}")
+            return None
+
+    def close_trade(self, journal_id: str, exit_price: float, entry_price: float, exit_reason: str):
+        """PATCH journal entry with exit data."""
+        if not journal_id:
+            return
+        try:
+            resp = self.session.patch(f"{JOURNAL_URL}/api/trades/{journal_id}", json={
+                "actual_entry": entry_price,
+                "actual_exit": exit_price,
+                "exit_reason": exit_reason,
+                "status": "closed",
+            }, timeout=5)
+            if resp.ok:
+                logging.info(f"📓 Journal entry closed: {journal_id}")
+            else:
+                logging.warning(f"Journal close failed: {resp.text}")
+        except Exception as e:
+            logging.warning(f"Journal close error: {e}")
+
+# =============================================================================
 # DATA STRUCTURES
 # =============================================================================
 
@@ -90,6 +161,7 @@ class PersistentScalperEngine:
         config['JUMP_THRESHOLD_PCT'] = float(_overrides.get('jump_threshold_pct', store.get_risk_param('jump_threshold_pct', 0.3)))
         config['MAX_LEVERAGE'] = int(_overrides.get('max_leverage', store.get_risk_param('max_leverage', 10)))
         
+        self.journal = JournalClient()
         self.position: Optional[Position] = None
         self.last_trade_time = 0
         self.trades_this_hour = 0
@@ -162,6 +234,16 @@ class PersistentScalperEngine:
                     aggressiveness_level=config.get('AGGRESSIVENESS_LEVEL', 0)
                 )
                 
+                journal_id = self.journal.open_trade(
+                    symbol="SOL-PERP",
+                    direction=direction,
+                    entry_price=price,
+                    stop_loss=sl,
+                    target_price=tp,
+                    qty=qty,
+                    leverage=config['MAX_LEVERAGE'],
+                )
+
                 self.position = Position(
                     symbol=SYMBOL,
                     side=direction,
@@ -174,6 +256,7 @@ class PersistentScalperEngine:
                     trade_audit_id=audit_id,
                     order_id=order_id
                 )
+                self.position.journal_id = journal_id
                 
                 self.last_trade_time = time.time()
                 store.set_current_position(
@@ -229,7 +312,14 @@ class PersistentScalperEngine:
                 
                 emoji = "🟢" if pnl_pct > 0 else "🔴"
                 logging.info(f"{emoji} P&L: {pnl_pct:+.2f}% | {reason}")
-                
+
+                self.journal.close_trade(
+                    journal_id=getattr(pos, 'journal_id', None),
+                    exit_price=current_price,
+                    entry_price=pos.entry_price,
+                    exit_reason=reason,
+                )
+
                 self.position = None
                 
         except Exception as e:
@@ -292,7 +382,7 @@ class PersistentScalperEngine:
                 self.live_store.cache_recent_trades(trades)
                 
                 # Check for jump using actual trade data
-                jump = self.live_store.detect_price_jump(lookback_seconds=config['LOOKBACK_SECONDS'])
+                jump = self.live_store.detect_price_jump(lookback_seconds=config['LOOKBACK_SECONDS'], threshold_pct=config['JUMP_THRESHOLD_PCT'])
                 
                 latest_price, latest_time = self.live_store.get_latest_price()
                 if latest_price:
