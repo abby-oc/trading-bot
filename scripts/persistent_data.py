@@ -15,7 +15,7 @@ import duckdb
 import pandas as pd
 from typing import Dict, List, Optional, Any
 
-WORKSPACE = Path("/Users/oc/.openclaw/workspace/trading-bot")
+WORKSPACE = Path("/Users/oc/.openclaw/workspace/apps/trading-bot")
 PERSISTENT_DB = WORKSPACE / "data" / "trading.duckdb"
 CONFIG_DIR = WORKSPACE / "config"
 

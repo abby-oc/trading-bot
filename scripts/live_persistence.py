@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import logging
 
-WORKSPACE = Path("/Users/oc/.openclaw/workspace/trading-bot")
+WORKSPACE = Path("/Users/oc/.openclaw/workspace/apps/trading-bot")
 db_path = WORKSPACE / "data" / "trading.duckdb"
 
 class LiveTradeStore:

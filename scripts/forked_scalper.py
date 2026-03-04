@@ -8,7 +8,7 @@ volatility state, and starts where it left off.
 """
 
 import sys
-sys.path.insert(0, '/Users/oc/.openclaw/workspace/trading-bot/scripts')
+sys.path.insert(0, '/Users/oc/.openclaw/workspace/apps/trading-bot/scripts')
 
 from scalper import main as original_scalper_main
 
