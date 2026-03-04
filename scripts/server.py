@@ -21,6 +21,8 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from market_db import MarketDB
+from strategy  import STRATEGIES, RatioZScore
+from backtest  import run_backtest
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 DB_PATH      = Path(__file__).parent.parent / "data" / "market.duckdb"
@@ -103,6 +105,93 @@ def latest():
         if btcsol:
             result.append({"symbol": "BTCSOL", "interval": "1d", "close": round(btcsol[0], 4), "dt": ""})
         return {"prices": result}
+    finally:
+        db.close()
+
+
+@app.get("/api/signals")
+def signals_endpoint(symbol: str = Query(None), interval: str = Query("1d")):
+    """Current signal from every strategy for the requested symbol (or all)."""
+    db = get_db()
+    try:
+        out = []
+        for name, strat in STRATEGIES.items():
+            is_ratio = isinstance(strat, RatioZScore)
+            syms = ["BTCSOL"] if is_ratio else (
+                [symbol] if symbol and not is_ratio else ["BTC-PERP", "SOL-PERP"]
+            )
+            for sym in syms:
+                df = db.ohlcv(sym, interval, limit=500)
+                if df.empty:
+                    continue
+                sig = strat.current_signal(df, sym)
+                out.append({
+                    "strategy":  sig.strategy,
+                    "symbol":    sig.symbol,
+                    "direction": sig.direction,
+                    "strength":  round(sig.strength, 3),
+                    "price":     sig.price,
+                    "reason":    sig.reason,
+                })
+        return JSONResponse({"signals": out})
+    finally:
+        db.close()
+
+
+@app.get("/api/backtest")
+def backtest_endpoint(
+    strategy: str = Query("ema_cross"),
+    symbol:   str = Query(None),
+    interval: str = Query("1d"),
+    capital:  float = Query(10_000),
+):
+    db = get_db()
+    try:
+        strat = STRATEGIES.get(strategy)
+        if not strat:
+            raise HTTPException(400, f"Unknown strategy: {strategy}")
+        is_ratio = isinstance(strat, RatioZScore)
+        sym  = "BTCSOL" if is_ratio else (symbol or "BTC-PERP")
+        df   = db.ohlcv(sym, interval, limit=500)
+        if df.empty:
+            raise HTTPException(404, f"No data for {sym}/{interval}")
+        result = run_backtest(df, strat, sym, initial_capital=capital)
+        return JSONResponse(result)
+    finally:
+        db.close()
+
+
+@app.get("/api/indicators")
+def indicators_endpoint(
+    symbol:   str = Query("BTC-PERP"),
+    interval: str = Query("1d"),
+    limit:    int = Query(500),
+):
+    """Return klines with common indicators pre-computed."""
+    from indicators import add_all
+    db = get_db()
+    try:
+        df = db.ohlcv(symbol, interval, limit=limit)
+        if df.empty:
+            raise HTTPException(404)
+        df = add_all(df)
+        # Keep only what the frontend needs
+        cols = ["open_time", "open", "high", "low", "close", "volume",
+                "ema_12", "ema_26", "ema_50", "rsi_14",
+                "bb_upper", "bb_mid", "bb_lower",
+                "macd", "macd_signal", "macd_hist"]
+        df = df[[c for c in cols if c in df.columns]].copy()
+        df["open_time"] = (df["open_time"] / 1000).astype(int)  # → seconds
+        # Replace NaN/Inf with None for JSON compliance
+        import math
+        def clean(v):
+            if v is None: return None
+            try:
+                if math.isnan(v) or math.isinf(v): return None
+            except (TypeError, ValueError): pass
+            return v
+        records = [{k: clean(v) for k, v in row.items()} for row in df.to_dict(orient="records")]
+        return JSONResponse({"symbol": symbol, "interval": interval, "data": records})
     finally:
         db.close()
 
