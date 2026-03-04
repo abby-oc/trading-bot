@@ -426,10 +426,10 @@ async function render() {
       rsiOSSeries.setData([{time:span.from, value:30},{time:span.to, value:30}]);
     }
 
-    // Fit
-    mainChart.timeScale().fitContent();
-    volChart.timeScale().fitContent();
-    rsiChart.timeScale().fitContent();
+    // Fit — only fit mainChart; vol + RSI sync from it via subscribeVisibleLogicalRangeChange.
+    // rAF ensures the browser has painted all series data before we set the range,
+    // avoiding the brief zoom-in to the first few candles on initial load.
+    requestAnimationFrame(() => mainChart.timeScale().fitContent());
 
     // Price header
     const last  = candles[candles.length-1];
