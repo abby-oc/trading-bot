@@ -132,6 +132,47 @@
   .ind-btn { font-size:10px; padding:2px 7px; background:var(--bg); border:1px solid var(--border);
              color:var(--muted); border-radius:3px; cursor:pointer; }
   .ind-btn.active { color:var(--text); border-color:var(--accent); }
+
+  /* pattern engine panel */
+  .pattern-composite { border:1px solid var(--border); border-radius:6px; padding:8px 10px;
+                        margin-bottom:8px; }
+  .pattern-composite.BUY  { border-color:#3fb95055; background:#1a2f1a22; }
+  .pattern-composite.SELL { border-color:#f8514955; background:#2f1a1a22; }
+  .pattern-composite.NEUTRAL { opacity:.7; }
+  .pcomp-dir  { font-size:13px; font-weight:800; letter-spacing:.5px; }
+  .pcomp-dir.BUY  { color:var(--green); }
+  .pcomp-dir.SELL { color:var(--red); }
+  .pcomp-dir.NEUTRAL { color:var(--muted); }
+  .pcomp-meta { font-size:9px; color:var(--muted); margin-top:2px; }
+  .pcomp-bar  { height:4px; background:var(--border); border-radius:2px; margin:5px 0 3px; }
+  .pcomp-fill { height:100%; border-radius:2px; transition:width .4s; }
+  .pcomp-fill.BUY  { background:var(--green); }
+  .pcomp-fill.SELL { background:var(--red); }
+  .pcomp-fill.NEUTRAL { background:var(--muted); }
+  .pcomp-stats { display:flex; gap:8px; }
+  .pcomp-stat  { font-size:9px; color:var(--muted); }
+  .pcomp-stat span { color:var(--text); font-weight:600; }
+
+  .pattern-row { display:flex; flex-direction:column; gap:2px; padding:5px 7px;
+                 border:1px solid var(--border); border-radius:5px; margin-bottom:3px;
+                 opacity:.5; transition:opacity .2s; }
+  .pattern-row.active         { opacity:1; }
+  .pattern-row.active.BUY  { border-color:#3fb95033; background:#1a2f1a22; }
+  .pattern-row.active.SELL { border-color:#f8514933; background:#2f1a1a22; }
+  .pat-top { display:flex; justify-content:space-between; align-items:center; }
+  .pat-name { font-size:10px; color:var(--muted); }
+  .pat-name.active { color:var(--text); }
+  .pat-right { display:flex; align-items:center; gap:5px; }
+  .pat-dir { font-size:10px; font-weight:700; }
+  .pat-dir.BUY  { color:var(--green); }
+  .pat-dir.SELL { color:var(--red); }
+  .pat-dir.NEUTRAL { color:var(--muted); }
+  .pat-wr { font-size:9px; color:var(--muted); }
+  .pat-bar { height:3px; background:var(--border); border-radius:2px; margin-top:3px; }
+  .pat-bar-fill { height:100%; border-radius:2px; transition:width .3s; }
+  .pat-bar-fill.BUY  { background:var(--green); }
+  .pat-bar-fill.SELL { background:var(--red); }
+  .pat-bar-fill.NEUTRAL { background:var(--muted); }
 </style>
 </head>
 <body>
@@ -200,6 +241,12 @@
     <div>
       <h3>Signals</h3>
       <div id="signals-panel"><span style="color:var(--muted);font-size:11px">Loading…</span></div>
+    </div>
+
+    <!-- Pattern Engine -->
+    <div>
+      <h3>Patterns <span id="pattern-dot" style="font-size:8px;color:var(--muted)">●</span></h3>
+      <div id="patterns-panel"><span style="color:var(--muted);font-size:10px">Loading…</span></div>
     </div>
 
     <!-- Risk -->
@@ -757,6 +804,91 @@ async function pollLivePrice() {
   } catch(e) {}
 }
 
+// ── Pattern Engine ─────────────────────────────────────────────────────────
+const ALL_PATTERNS = [
+  "VelocityBurst", "CompressionBreakout", "TrendPullback",
+  "MeanReversion", "OrderFlowPressure", "MultitimeframeAlignment",
+];
+const PATTERN_LABELS = {
+  VelocityBurst:          "Velocity",
+  CompressionBreakout:    "Compression",
+  TrendPullback:          "Trend PB",
+  MeanReversion:          "MeanRev",
+  OrderFlowPressure:      "OrderFlow",
+  MultitimeframeAlignment:"MTF Align",
+};
+
+async function pollPatterns() {
+  const panel = document.getElementById('patterns-panel');
+  const dot   = document.getElementById('pattern-dot');
+  try {
+    const res  = await fetch(`/api/live/patterns?symbol=${state.symbol}`);
+    if (!res.ok) {
+      dot.style.color = '#f85149';
+      panel.innerHTML = `<span style="color:var(--muted);font-size:10px">Unavailable</span>`;
+      return;
+    }
+    const data = await res.json();
+    const comp = data.composite;
+    const sigs = data.signals || [];
+    const sigMap = {};
+    for (const s of sigs) sigMap[s.name] = s;
+
+    // Direction labels & icons
+    const dirIcon = {BUY:'▲', SELL:'▼', NEUTRAL:'●'}[comp.direction] || '●';
+    const dirLabel = comp.direction === 'BUY' ? 'LONG' : comp.direction === 'SELL' ? 'SHORT' : 'FLAT';
+    const confPct  = Math.round(comp.confidence * 100);
+    const consPct  = Math.round(comp.consensus  * 100);
+    const wrPct    = Math.round(comp.win_rate_weighted * 100);
+    const nActive  = comp.active_patterns.length;
+
+    dot.style.color = comp.direction === 'BUY' ? '#3fb950'
+                    : comp.direction === 'SELL' ? '#f85149' : '#8b949e';
+
+    // Composite card
+    let html = `
+      <div class="pattern-composite ${comp.direction}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="pcomp-dir ${comp.direction}">${dirIcon} ${dirLabel}</span>
+          <span style="font-size:10px;color:var(--muted)">${nActive}/${ALL_PATTERNS.length} active</span>
+        </div>
+        <div class="pcomp-bar"><div class="pcomp-fill ${comp.direction}" style="width:${confPct}%"></div></div>
+        <div class="pcomp-stats">
+          <div class="pcomp-stat">Conf <span>${confPct}%</span></div>
+          <div class="pcomp-stat">Consensus <span>${consPct}%</span></div>
+          <div class="pcomp-stat">WR <span>${wrPct}%</span></div>
+        </div>
+      </div>`;
+
+    // Individual pattern rows
+    for (const name of ALL_PATTERNS) {
+      const sig    = sigMap[name];
+      const isActive = !!sig;
+      const dir    = sig ? sig.direction : 'NEUTRAL';
+      const conf   = sig ? Math.round(sig.raw_confidence * 100) : 0;
+      const wr     = sig ? Math.round(sig.win_rate * 100) : null;
+      const dirIcon2 = dir === 'BUY' ? '▲' : dir === 'SELL' ? '▼' : '—';
+      const wrStr  = wr !== null ? `WR ${wr}%` : '';
+      html += `
+        <div class="pattern-row ${isActive ? 'active' : ''} ${isActive ? dir : ''}">
+          <div class="pat-top">
+            <span class="pat-name ${isActive ? 'active' : ''}">${PATTERN_LABELS[name] || name}</span>
+            <div class="pat-right">
+              <span class="pat-wr">${wrStr}</span>
+              <span class="pat-dir ${dir}">${isActive ? dirIcon2 + ' ' + dir : '—'}</span>
+            </div>
+          </div>
+          ${isActive ? `<div class="pat-bar"><div class="pat-bar-fill ${dir}" style="width:${conf}%"></div></div>` : ''}
+        </div>`;
+    }
+
+    panel.innerHTML = html;
+  } catch(e) {
+    dot.style.color = '#f85149';
+    console.error('Pattern poll error:', e);
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 // Default to SOL + 1M + LIVE
 document.querySelectorAll('#symbol-btns button').forEach(b =>
@@ -767,12 +899,14 @@ loadMarketCards();
 render();
 loadRisk();
 pollScalper();
+pollPatterns();
 
 // Live mode: refresh chart every 10s, price every 3s
 setInterval(() => { render(); if (state.source !== 'live') loadMarketCards(); },
   state.source === 'live' ? 10_000 : 60_000);
 setInterval(pollScalper, 5_000);
 setInterval(pollLivePrice, 3_000);
+setInterval(pollPatterns, 8_000);
 </script>
 </body>
 </html>

@@ -1,0 +1,38 @@
+{
+  "VelocityBurst": {
+    "win_rate": 0.3043,
+    "avg_move_pct": 0.245,
+    "sample_count": 23,
+    "wins": 7
+  },
+  "CompressionBreakout": {
+    "win_rate": 0.4,
+    "avg_move_pct": 0.1455,
+    "sample_count": 5,
+    "wins": 2
+  },
+  "TrendPullback": {
+    "win_rate": 0.3385,
+    "avg_move_pct": 0.1974,
+    "sample_count": 130,
+    "wins": 44
+  },
+  "MeanReversion": {
+    "win_rate": 0.1176,
+    "avg_move_pct": 0.2522,
+    "sample_count": 85,
+    "wins": 10
+  },
+  "OrderFlowPressure": {
+    "win_rate": 0.5,
+    "avg_move_pct": 0.0,
+    "sample_count": 0,
+    "wins": 0
+  },
+  "MultitimeframeAlignment": {
+    "win_rate": 0.1871,
+    "avg_move_pct": 0.1929,
+    "sample_count": 155,
+    "wins": 29
+  }
+}

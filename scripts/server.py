@@ -331,7 +331,7 @@ def live_price(symbol: str = Query("SOL-PERP")):
 @app.get("/api/live/scalper")
 def scalper_status():
     """Read scalper log for current status (last 20 lines)."""
-    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
     logs = sorted(log_dir.glob("scalper_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not logs:
         return JSONResponse({"running": False, "lines": []})
@@ -341,6 +341,114 @@ def scalper_status():
         "running": True,
         "log_file": logs[0].name,
         "lines": lines,
+    })
+
+
+# ── Pattern Engine ────────────────────────────────────────────────────────
+
+try:
+    from pattern_engine import PatternEngine as _PatternEngine
+    _pattern_engine = _PatternEngine()
+    _PATTERNS_AVAILABLE = True
+except Exception as _pe:
+    _PATTERNS_AVAILABLE = False
+    _pattern_engine = None
+
+
+def _fetch_klines_df(orderly_sym: str, interval: str, limit: int) -> "pd.DataFrame":
+    """Fetch live klines from Orderly TV API and return as DataFrame."""
+    import pandas as _pd
+    import time as _t
+    secs = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+            "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 60)
+    resolution = ORDERLY_RES_MAP.get(interval, "1")
+    now = int(_t.time())
+    from_ts = now - (limit * secs * 2)  # fetch double to ensure enough bars
+    try:
+        r = _get_http().get(f"{ORDERLY_BASE}/v1/tv/history", params={
+            "symbol": orderly_sym, "resolution": resolution,
+            "from": from_ts, "to": now,
+        })
+        data = r.json()
+    except Exception:
+        return _pd.DataFrame()
+    if "t" not in data or not data["t"]:
+        return _pd.DataFrame()
+    df = _pd.DataFrame({
+        "open_time": [int(ts) * 1000 for ts in data["t"]],  # → ms
+        "open":  data["o"], "high": data["h"],
+        "low":   data["l"], "close": data["c"],
+        "volume": data.get("v", [0] * len(data["t"])),
+    })
+    return df.tail(limit).reset_index(drop=True)
+
+
+def _fetch_recent_trades(orderly_sym: str, limit: int = 100) -> list:
+    """Fetch recent market trades from Orderly."""
+    try:
+        r = _get_http().get(f"{ORDERLY_BASE}/v1/public/market_trades",
+                            params={"symbol": orderly_sym, "limit": limit})
+        data = r.json()
+        return data.get("data", {}).get("rows", [])
+    except Exception:
+        return []
+
+
+@app.get("/api/live/patterns")
+def live_patterns(symbol: str = Query("SOL-PERP")):
+    """Run the pattern engine on live Orderly data and return probabilistic signals."""
+    if not _PATTERNS_AVAILABLE or _pattern_engine is None:
+        raise HTTPException(503, "Pattern engine not available")
+
+    orderly_sym = ORDERLY_SYM_MAP.get(symbol)
+    if not orderly_sym:
+        raise HTTPException(400, f"Unknown symbol: {symbol}")
+
+    # Fetch multi-timeframe candles + recent trades
+    df_1m  = _fetch_klines_df(orderly_sym, "1m",  50)
+    df_5m  = _fetch_klines_df(orderly_sym, "5m",  50)
+    df_15m = _fetch_klines_df(orderly_sym, "15m", 60)
+    recent_trades = _fetch_recent_trades(orderly_sym, 100)
+
+    if df_1m.empty:
+        raise HTTPException(502, "Could not fetch live klines")
+
+    try:
+        composite = _pattern_engine.analyze(df_1m, df_5m, df_15m, recent_trades)
+    except Exception as e:
+        raise HTTPException(500, f"Pattern engine error: {e}")
+
+    # Build response
+    stats = _pattern_engine.stats
+    signals_out = []
+    for sig in composite.signals:
+        signals_out.append({
+            "name":             sig.name,
+            "direction":        sig.direction,
+            "raw_confidence":   round(sig.raw_confidence, 3),
+            "expected_move_pct": round(sig.expected_move_pct, 3),
+            "win_rate":         round(stats.get(sig.name, {}).get("win_rate", 0.5), 3),
+            "sample_count":     stats.get(sig.name, {}).get("sample_count", 0),
+            "features":         {k: round(v, 4) if isinstance(v, float) else v
+                                 for k, v in sig.features.items()},
+        })
+
+    all_patterns = [
+        "VelocityBurst", "CompressionBreakout", "TrendPullback",
+        "MeanReversion", "OrderFlowPressure", "MultitimeframeAlignment",
+    ]
+
+    return JSONResponse({
+        "symbol": symbol,
+        "composite": {
+            "direction":        composite.direction,
+            "confidence":       round(composite.confidence, 3),
+            "consensus":        round(composite.consensus, 3),
+            "win_rate_weighted": round(composite.win_rate_weighted, 3),
+            "active_patterns":  composite.active_patterns,
+        },
+        "signals": signals_out,
+        "all_patterns": all_patterns,
     })
 
 
